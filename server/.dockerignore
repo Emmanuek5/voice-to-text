@@ -1,0 +1,16 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.DS_Store
+.git
+.gitignore
+README.md
+*.ipynb
+**/*.log
+**/.env
+**/.env.*
+**/.vscode
+**/.idea
+
