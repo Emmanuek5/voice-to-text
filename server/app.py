@@ -6,7 +6,7 @@ import logging
 from typing import Optional, List
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
@@ -69,6 +69,55 @@ async def get_model() -> WhisperModel:
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok", "model": MODEL_SIZE})
+
+
+@app.post("/transcribe")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    lang: str = Form(default=LANG_DEFAULT)
+):
+    """HTTP endpoint for non-streaming transcription"""
+    try:
+        start_time = time.time()
+
+        # Read audio data
+        audio_data = await audio.read()
+        logger.info(
+            f"Received audio file: {len(audio_data)} bytes, content-type: {audio.content_type}")
+
+        # Convert to numpy array (expecting Int16LE PCM)
+        audio_np = np.frombuffer(audio_data, dtype=np.int16)
+
+        # Convert to float32 for Whisper
+        audio_f32 = (audio_np.astype(np.float32) / 32768.0).copy()
+
+        # Transcribe
+        model = await get_model()
+        segments, info = model.transcribe(
+            audio_f32,
+            language=lang if lang != "auto" else None,
+            vad_filter=True,
+            without_timestamps=True
+        )
+
+        text = "".join(seg.text for seg in segments).strip()
+        processing_time = time.time() - start_time
+
+        logger.info(
+            f"HTTP transcribe: {processing_time:.3f}s, lang: {lang}, text: '{text[:100]}'")
+
+        return JSONResponse({
+            "text": text,
+            "language": info.language if hasattr(info, 'language') else lang,
+            "processing_time": round(processing_time, 3)
+        })
+
+    except Exception as e:
+        logger.error(f"HTTP transcription failed: {e}")
+        return JSONResponse(
+            {"error": str(e)},
+            status_code=500
+        )
 
 
 @app.websocket("/asr")

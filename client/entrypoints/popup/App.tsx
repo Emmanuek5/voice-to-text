@@ -9,14 +9,16 @@ const log = {
   debug: (...args: any[]) => console.debug(LOG_PREFIX, ...args),
 };
 
-type WsProtocol = "ws" | "wss";
+type Protocol = "http" | "https";
 
 function App() {
   log.info("Popup component initialized");
-  const [serverStatus, setServerStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [serverStatus, setServerStatus] = useState<
+    "checking" | "online" | "offline"
+  >("checking");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [serverProtocol, setServerProtocol] = useState<WsProtocol>("ws");
+  const [serverProtocol, setServerProtocol] = useState<Protocol>("http");
   const [serverBase, setServerBase] = useState<string>("127.0.0.1:8020");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -24,12 +26,24 @@ function App() {
     // Load saved config on mount
     const chromeObj: any = (window as any).chrome;
     if (chromeObj?.storage?.local) {
-      chromeObj.storage.local.get(["server_protocol", "server_base"], (res: { server_protocol?: WsProtocol; server_base?: string }) => {
-        if (res.server_protocol) setServerProtocol(res.server_protocol);
-        if (res.server_base) setServerBase(res.server_base);
-        // After loading, check status
-        setTimeout(checkServerStatus, 0);
-      });
+      chromeObj.storage.local.get(
+        ["server_protocol", "server_base"],
+        (res: {
+          server_protocol?: Protocol | "ws" | "wss";
+          server_base?: string;
+        }) => {
+          if (res.server_protocol) {
+            // Convert ws/wss to http/https for backward compatibility
+            let protocol = res.server_protocol;
+            if (protocol === "ws") protocol = "http";
+            if (protocol === "wss") protocol = "https";
+            setServerProtocol(protocol as Protocol);
+          }
+          if (res.server_base) setServerBase(res.server_base);
+          // After loading, check status
+          setTimeout(checkServerStatus, 0);
+        }
+      );
     } else {
       // Fallback: still try status with defaults
       setTimeout(checkServerStatus, 0);
@@ -38,64 +52,41 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const wsUrl = () => `${serverProtocol}://${serverBase}/asr`;
+  const serverUrl = () => `${serverProtocol}://${serverBase}`;
 
   const checkServerStatus = async () => {
-    // Try opening a short-lived WebSocket to the configured endpoint
-    const url = wsUrl();
+    // Try HTTP health check
+    const url = `${serverUrl()}/health`;
     try {
-      const ok = await new Promise<boolean>((resolve) => {
-        let settled = false;
-        let sock: WebSocket | null = null;
-        try {
-          sock = new WebSocket(url);
-        } catch (e) {
-          resolve(false);
-          return;
-        }
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          try { sock?.close(); } catch {}
-          resolve(false);
-        }, 2500);
-        if (!sock) return resolve(false);
-        sock.onopen = () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          try { sock?.close(); } catch {}
-          resolve(true);
-        };
-        sock.onerror = () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(false);
-        };
-        sock.onclose = () => {
-          // If it closes before onopen, treat as failure (handled by timeout/onerror)
-        };
+      const response = await fetch(url, {
+        method: "GET",
+        signal: AbortSignal.timeout(5000), // 5 second timeout
       });
-      if (ok) {
+
+      if (response.ok) {
+        const data = await response.json();
+        log.info("Server health check successful:", data);
         setServerStatus("online");
         setError(null);
       } else {
+        log.warn("Server health check failed:", response.status);
         setServerStatus("offline");
       }
-    } catch {
+    } catch (error: any) {
+      log.error("Server health check error:", error);
       setServerStatus("offline");
     }
   };
 
- 
   const testConnection = async () => {
     setIsLoading(true);
     setError(null);
     await checkServerStatus();
     setIsLoading(false);
     if (serverStatus === "offline") {
-      setError("Server not reachable. Check your server settings and connectivity.");
+      setError(
+        "Server not reachable. Check your server settings and connectivity."
+      );
     }
   };
 
@@ -132,7 +123,9 @@ function App() {
           </div>
           <div className="brand-text">
             <h1 className="title">Voice to Text</h1>
-            <p className="subtitle">Local streaming transcription with auto-stop on silence</p>
+            <p className="subtitle">
+              Local streaming transcription with auto-stop on silence
+            </p>
           </div>
         </div>
       </header>
@@ -143,42 +136,62 @@ function App() {
             <h2>Server Status</h2>
             <span
               className={`status-pill ${
-                serverStatus === "online" ? "status-success" : 
-                serverStatus === "offline" ? "status-error" : "status-neutral"
+                serverStatus === "online"
+                  ? "status-success"
+                  : serverStatus === "offline"
+                  ? "status-error"
+                  : "status-neutral"
               }`}
               role="status"
               aria-live="polite"
             >
-              {serverStatus === "online" ? "Online" : 
-               serverStatus === "offline" ? "Offline" : "Checking..."}
+              {serverStatus === "online"
+                ? "Online"
+                : serverStatus === "offline"
+                ? "Offline"
+                : "Checking..."}
             </span>
           </div>
           <p className="muted" style={{ marginTop: 8 }}>
-            Endpoint: <code>{wsUrl()}</code>
+            Endpoint: <code>{serverUrl()}</code>
           </p>
-          
+
           {serverStatus === "offline" && (
             <div className="server-help">
-              <p className="help-text">Start the local server to enable transcription:</p>
-              <code className="code-block">cd server && .venv\Scripts\python.exe app.py</code>
-              <button className="btn ghost small" onClick={testConnection} disabled={isLoading}>
+              <p className="help-text">
+                Start the local server to enable transcription:
+              </p>
+              <code className="code-block">
+                cd server && .venv\Scripts\python.exe app.py
+              </code>
+              <button
+                className="btn ghost small"
+                onClick={testConnection}
+                disabled={isLoading}
+              >
                 {isLoading ? <span className="spinner" /> : "Test Connection"}
               </button>
             </div>
           )}
-          
+
           {serverStatus === "online" && (
             <div className="tips">
               <div className="tip">
-                <span className="tip-icon" aria-hidden>✨</span>
+                <span className="tip-icon" aria-hidden>
+                  ✨
+                </span>
                 Click the mic button next to any input field
               </div>
               <div className="tip">
-                <span className="tip-icon" aria-hidden>🔇</span>
+                <span className="tip-icon" aria-hidden>
+                  🔇
+                </span>
                 Auto-stops after 3 seconds of silence
               </div>
               <div className="tip">
-                <span className="tip-icon" aria-hidden>⚡</span>
+                <span className="tip-icon" aria-hidden>
+                  ⚡
+                </span>
                 See live partials as you speak
               </div>
             </div>
@@ -195,10 +208,10 @@ function App() {
               <select
                 id="protocol"
                 value={serverProtocol}
-                onChange={(e) => setServerProtocol(e.target.value as WsProtocol)}
+                onChange={(e) => setServerProtocol(e.target.value as Protocol)}
               >
-                <option value="ws">ws (insecure)</option>
-                <option value="wss">wss (TLS)</option>
+                <option value="http">http (insecure)</option>
+                <option value="https">https (TLS)</option>
               </select>
             </div>
             <div className="form-row">
@@ -212,15 +225,24 @@ function App() {
               />
             </div>
             <div className="form-row" style={{ marginTop: 8 }}>
-              <button className="btn" onClick={saveSettings} disabled={isSaving}>
+              <button
+                className="btn"
+                onClick={saveSettings}
+                disabled={isSaving}
+              >
                 {isSaving ? <span className="spinner" /> : "Save Settings"}
               </button>
-              <button className="btn ghost" onClick={testConnection} disabled={isLoading} style={{ marginLeft: 8 }}>
+              <button
+                className="btn ghost"
+                onClick={testConnection}
+                disabled={isLoading}
+                style={{ marginLeft: 8 }}
+              >
                 {isLoading ? <span className="spinner" /> : "Test Connection"}
               </button>
             </div>
             <p className="muted" style={{ marginTop: 8 }}>
-              Use wss for HTTPS domains or behind a reverse proxy with TLS.
+              Use https for HTTPS domains or behind a reverse proxy with TLS.
             </p>
           </div>
         </section>
@@ -229,7 +251,7 @@ function App() {
           <div className="section-header">
             <h2>Features</h2>
           </div>
-          
+
           <div className="feature-grid">
             <div className="feature">
               <div className="feature-icon">🎯</div>
