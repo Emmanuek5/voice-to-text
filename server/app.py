@@ -1,6 +1,8 @@
 import os
 import asyncio
 import json
+import time
+import logging
 from typing import Optional, List
 
 import numpy as np
@@ -9,6 +11,10 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 APP_PORT = int(os.getenv("PORT", "8020"))
 APP_HOST = os.getenv("HOST", "0.0.0.0")
@@ -16,8 +22,10 @@ APP_HOST = os.getenv("HOST", "0.0.0.0")
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "base")
 LANG_DEFAULT = os.getenv("LANG", "en")
 SAMPLE_RATE = 16000  # expected input sample rate (Hz)
-PARTIAL_INTERVAL_SEC = 1.0  # throttle partial decoding
-PARTIAL_WINDOW_SEC = 8.0    # decode on the last N seconds for partials
+# throttle partial decoding (higher for remote)
+PARTIAL_INTERVAL_SEC = float(os.getenv("PARTIAL_INTERVAL_SEC", "1.5"))
+# decode on the last N seconds for partials
+PARTIAL_WINDOW_SEC = float(os.getenv("PARTIAL_WINDOW_SEC", "6.0"))
 # stop after this much silence
 SILENCE_SECONDS = float(os.getenv("SILENCE_SECONDS", "3.0"))
 # RMS threshold for silence in Int16 units
@@ -38,6 +46,16 @@ _model: Optional[WhisperModel] = None
 _model_lock = asyncio.Lock()
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Preload the model on startup to reduce first-request latency"""
+    logger.info(f"Preloading Whisper model: {MODEL_SIZE}")
+    start_time = time.time()
+    await get_model()
+    load_time = time.time() - start_time
+    logger.info(f"Model loaded in {load_time:.2f}s")
+
+
 async def get_model() -> WhisperModel:
     global _model
     if _model is None:
@@ -56,6 +74,7 @@ async def health():
 @app.websocket("/asr")
 async def ws_asr(ws: WebSocket):
     await ws.accept()
+    logger.info("WebSocket connection established")
 
     # Session state
     lang = LANG_DEFAULT
@@ -64,6 +83,7 @@ async def ws_asr(ws: WebSocket):
     last_partial_ts = 0.0
     started = False
     silent_samples = 0  # count consecutive silent samples
+    session_start = time.time()
 
     async def decode_partial():
         nonlocal last_partial_ts
@@ -81,14 +101,19 @@ async def ws_asr(ws: WebSocket):
             return
         audio_f32 = (chunk.astype(np.float32) / 32768.0).copy()
         try:
+            decode_start = time.time()
             model = await get_model()
             # Use no_speech_threshold to reduce hallucinations; disable vad_filter for speed
             segments, info = model.transcribe(
                 audio_f32, language=lang, vad_filter=False, without_timestamps=True)
             text = "".join(seg.text for seg in segments).strip()
+            decode_time = time.time() - decode_start
             if text:
+                logger.debug(
+                    f"Partial decode: {decode_time:.3f}s, text: '{text[:50]}...'")
                 await ws.send_text(json.dumps({"type": "partial", "text": text}))
         except Exception as e:
+            logger.error(f"Partial decode failed: {e}")
             await ws.send_text(json.dumps({"type": "error", "message": f"partial_decode_failed: {e}"}))
 
     async def decode_final():
@@ -97,12 +122,18 @@ async def ws_asr(ws: WebSocket):
             return
         audio_f32 = (buffer.astype(np.float32) / 32768.0).copy()
         try:
+            decode_start = time.time()
             model = await get_model()
             segments, info = model.transcribe(
                 audio_f32, language=lang, vad_filter=True, without_timestamps=True)
             text = "".join(seg.text for seg in segments).strip()
+            decode_time = time.time() - decode_start
+            session_time = time.time() - session_start
+            logger.info(
+                f"Final decode: {decode_time:.3f}s, session: {session_time:.1f}s, text: '{text[:100]}'")
             await ws.send_text(json.dumps({"type": "final", "text": text}))
         except Exception as e:
+            logger.error(f"Final decode failed: {e}")
             await ws.send_text(json.dumps({"type": "error", "message": f"final_decode_failed: {e}"}))
 
     await ws.send_text(json.dumps({"type": "ready"}))
