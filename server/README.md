@@ -31,12 +31,12 @@ pip install -r requirements.txt
 ## Running
 
 ```bash
-# Default port 8020
+# Default host:port 0.0.0.0:8020 (accessible on LAN)
 python app.py
 
 # Or customize via env
-set PORT=8020 & set WHISPER_MODEL=base & set LANG=en & set SILENCE_SECONDS=3.0 & set SILENCE_RMS=200.0 && python app.py  # Windows
-# LANG=C.UTF-8 PORT=8020 WHISPER_MODEL=base SILENCE_SECONDS=3.0 SILENCE_RMS=200.0 python app.py                      # macOS/Linux
+set HOST=0.0.0.0 & set PORT=8020 & set WHISPER_MODEL=base & set LANG=en & set SILENCE_SECONDS=3.0 & set SILENCE_RMS=200.0 && python app.py  # Windows
+# HOST=0.0.0.0 PORT=8020 WHISPER_MODEL=base SILENCE_SECONDS=3.0 SILENCE_RMS=200.0 python app.py                      # macOS/Linux
 ```
 
 The server starts on `http://127.0.0.1:<PORT>` and exposes:

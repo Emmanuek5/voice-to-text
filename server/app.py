@@ -11,13 +11,17 @@ from faster_whisper import WhisperModel
 
 
 APP_PORT = int(os.getenv("PORT", "8020"))
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "base")  # tiny, base, small, medium, large-v3, etc.
+APP_HOST = os.getenv("HOST", "0.0.0.0")
+# tiny, base, small, medium, large-v3, etc.
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "base")
 LANG_DEFAULT = os.getenv("LANG", "en")
 SAMPLE_RATE = 16000  # expected input sample rate (Hz)
 PARTIAL_INTERVAL_SEC = 1.0  # throttle partial decoding
 PARTIAL_WINDOW_SEC = 8.0    # decode on the last N seconds for partials
-SILENCE_SECONDS = float(os.getenv("SILENCE_SECONDS", "3.0"))  # stop after this much silence
-SILENCE_RMS = float(os.getenv("SILENCE_RMS", "200.0"))       # RMS threshold for silence in Int16 units
+# stop after this much silence
+SILENCE_SECONDS = float(os.getenv("SILENCE_SECONDS", "3.0"))
+# RMS threshold for silence in Int16 units
+SILENCE_RMS = float(os.getenv("SILENCE_RMS", "200.0"))
 
 app = FastAPI(title="Voice-to-Text Streaming ASR")
 
@@ -40,7 +44,7 @@ async def get_model() -> WhisperModel:
         async with _model_lock:
             if _model is None:
                 # device="auto" will use CUDA if available, else CPU
-                _model =WhisperModel(MODEL_SIZE, device="auto")
+                _model = WhisperModel(MODEL_SIZE, device="auto")
     return _model
 
 
@@ -79,7 +83,8 @@ async def ws_asr(ws: WebSocket):
         try:
             model = await get_model()
             # Use no_speech_threshold to reduce hallucinations; disable vad_filter for speed
-            segments, info = model.transcribe(audio_f32, language=lang, vad_filter=False, without_timestamps=True)
+            segments, info = model.transcribe(
+                audio_f32, language=lang, vad_filter=False, without_timestamps=True)
             text = "".join(seg.text for seg in segments).strip()
             if text:
                 await ws.send_text(json.dumps({"type": "partial", "text": text}))
@@ -93,7 +98,8 @@ async def ws_asr(ws: WebSocket):
         audio_f32 = (buffer.astype(np.float32) / 32768.0).copy()
         try:
             model = await get_model()
-            segments, info = model.transcribe(audio_f32, language=lang, vad_filter=True, without_timestamps=True)
+            segments, info = model.transcribe(
+                audio_f32, language=lang, vad_filter=True, without_timestamps=True)
             text = "".join(seg.text for seg in segments).strip()
             await ws.send_text(json.dumps({"type": "final", "text": text}))
         except Exception as e:
@@ -180,4 +186,4 @@ async def ws_asr(ws: WebSocket):
 # Entrypoint for `python app.py` (dev convenience)
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=APP_PORT, reload=False)
+    uvicorn.run("app:app", host=APP_HOST, port=APP_PORT, reload=False)
